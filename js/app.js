@@ -34,8 +34,10 @@ const C = {
 
 // ── Mission Phases ────────────────────────────────────────
 // startH/endH in mission hours (T+0 = launch)
-// Launch: 2026-Apr-01 22:24 UTC
-const LAUNCH_UTC = Date.UTC(2026, 3, 1, 22, 24, 0); // Apr 1 2026 22:24 UTC
+// Launch: 2026-Apr-01 22:24 UTC (default — updated from API if available)
+let LAUNCH_UTC = Date.UTC(2026, 3, 1, 22, 24, 0); // Apr 1 2026 22:24 UTC
+let launchTimeStr = 'APR 01, 2026 22:24 UTC'; // human-readable, updated from API
+let launchFetched = false;
 
 const PHASES = [
     {
@@ -138,6 +140,39 @@ const POLL_INTERVAL = 15000; // 15 seconds
 
 // Detect if running on GitHub Pages (no server proxy available)
 const IS_STATIC = location.hostname.includes('github.io') || location.protocol === 'file:';
+
+// ── Fetch launch time from JPL OBJ_DATA ──────────────────
+async function fetchLaunchTime() {
+    if (launchFetched) return;
+    try {
+        const url = 'https://ssd.jpl.nasa.gov/api/horizons.api?format=json&COMMAND=\'-1024\'&MAKE_EPHEM=NO&OBJ_DATA=YES';
+        const res = await fetch(url);
+        const json = await res.json();
+        const result = json.result || '';
+        // Look for pattern: "launched April 1 @ 22:24 UTC" or similar
+        const match = result.match(/launched?\s+(\w+\s+\d+)\s*@\s*(\d{1,2}:\d{2})\s*UTC/i);
+        if (match) {
+            const dateStr = match[1]; // e.g. "April 1"
+            const timeStr = match[2]; // e.g. "22:24"
+            // Parse month and day
+            const months = {january:0,february:1,march:2,april:3,may:4,june:5,july:6,august:7,september:8,october:9,november:10,december:11};
+            const parts = dateStr.trim().split(/\s+/);
+            const mon = months[parts[0].toLowerCase()];
+            const day = parseInt(parts[1]);
+            const [hh, mm] = timeStr.split(':').map(Number);
+            if (mon !== undefined && !isNaN(day) && !isNaN(hh)) {
+                // Assume current year
+                const year = new Date().getUTCFullYear();
+                LAUNCH_UTC = Date.UTC(year, mon, day, hh, mm, 0);
+                const monNames = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+                launchTimeStr = `${monNames[mon]} ${String(day).padStart(2,'0')}, ${year} ${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')} UTC`;
+            }
+        }
+        launchFetched = true;
+    } catch (e) {
+        // Silently fall back to hardcoded launch time
+    }
+}
 
 // Build the JPL Horizons URL for direct client-side fetch
 function buildHorizonsURL() {
@@ -458,6 +493,7 @@ function setMode(m) {
     });
 
     if (m === 'live') {
+        fetchLaunchTime(); // get latest launch time from JPL
         startLivePolling();
         // In live mode, also sync simulated time to real MET
         missionH = getRealMET();
@@ -551,6 +587,18 @@ function render(t) {
         ctx.font = '5px "Press Start 2P", monospace';
         ctx.textAlign = 'right';
         ctx.fillText(liveAvailable ? 'LIVE' : 'NO DATA', W-12, 10);
+
+        // Show big countdown on canvas during pre-launch
+        const realH = getRealMET();
+        if (realH < 0) {
+            ctx.textAlign = 'center';
+            ctx.fillStyle = '#FFD600';
+            ctx.font = '12px "Press Start 2P", monospace';
+            ctx.fillText('T-' + formatCountdown(-realH), W/2, H/2 - 20);
+            ctx.fillStyle = 'rgba(255,255,255,0.4)';
+            ctx.font = '6px "Press Start 2P", monospace';
+            ctx.fillText('LAUNCH: ' + launchTimeStr, W/2, H/2 - 6);
+        }
     }
 }
 
@@ -574,6 +622,18 @@ function getRealMET() {
     return diffMs / 3600000; // hours
 }
 
+// Format a countdown from hours to a readable string
+function formatCountdown(hours) {
+    const total = Math.abs(hours * 3600);
+    const d = Math.floor(total / 86400);
+    const h = Math.floor((total % 86400) / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = Math.floor(total % 60);
+    const pad = (n) => String(n).padStart(2, '0');
+    if (d > 0) return `${d}d ${pad(h)}h ${pad(m)}m ${pad(s)}s`;
+    return `${pad(h)}h ${pad(m)}m ${pad(s)}s`;
+}
+
 function updateUI() {
     const isLive = mode === 'live' && liveAvailable && liveData;
 
@@ -589,6 +649,22 @@ function updateUI() {
         $badge.textContent = activePhase.name;
         $desc.textContent = activePhase.desc;
         isCompleted = (idx) => PHASES.indexOf(activePhase) > idx;
+    } else if (mode === 'live') {
+        // Live mode but no telemetry yet — show real countdown/MET
+        const realH = getRealMET();
+        activePhase = getPhase(realH);
+        $phase.textContent = activePhase.name;
+        $dist.textContent = '0 km';
+        $speed.textContent = '0 km/h';
+        $met.textContent = formatMET(realH);
+        $badge.textContent = activePhase.name;
+        if (realH < 0) {
+            // Pre-launch: show countdown + scheduled launch time
+            $desc.textContent = `LAUNCH SCHEDULED: ${launchTimeStr} — ${formatCountdown(-realH)} remaining`;
+        } else {
+            $desc.textContent = activePhase.desc;
+        }
+        isCompleted = (idx) => PHASES[idx].endH <= realH && PHASES[idx] !== activePhase;
     } else {
         activePhase = getPhase(missionH);
         $phase.textContent = activePhase.name;
