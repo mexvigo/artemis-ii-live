@@ -514,14 +514,19 @@ function setMode(m) {
 }
 
 function updateSourceIndicator() {
+    const realH = getRealMET();
     if (mode === 'live' && liveAvailable) {
         $srcDot.className = 'dot dot-live';
-        $srcLabel.textContent = 'LIVE — JPL HORIZONS';
+        $srcLabel.textContent = 'LIVE \u2014 JPL HORIZONS';
         $footNote.textContent = 'Live telemetry from JPL Horizons API';
-    } else if (mode === 'live' && !liveAvailable) {
+    } else if (mode === 'live' && realH >= 0 && !liveAvailable) {
         $srcDot.className = 'dot dot-waiting';
-        $srcLabel.textContent = 'LIVE — WAITING FOR DATA (falling back to sim)';
-        $footNote.textContent = 'Horizons data not yet available — showing simulated trajectory';
+        $srcLabel.textContent = 'TELEMETRY PENDING \u2014 SIMULATED POSITION';
+        $footNote.textContent = 'Live data begins after ICPS separation (~T+3h24m) \u2014 showing simulated trajectory';
+    } else if (mode === 'live' && realH < 0) {
+        $srcDot.className = 'dot dot-waiting';
+        $srcLabel.textContent = `COUNTDOWN \u2014 LAUNCH: ${launchTimeStr}`;
+        $footNote.textContent = 'Awaiting launch \u2014 live telemetry will activate after ICPS separation';
     } else {
         $srcDot.className = 'dot dot-sim';
         $srcLabel.textContent = 'SIMULATED DATA';
@@ -581,16 +586,21 @@ function render(t) {
 
     // Live indicator on canvas
     if (mode === 'live') {
-        ctx.fillStyle = liveAvailable ? '#00FF41' : '#FF6D00';
+        const realH = getRealMET();
+        const isLiveData = liveAvailable;
+        const isPreLaunch = realH < 0;
+        const isTelemetryGap = realH >= 0 && !isLiveData;
+
+        // Status dot + label (top-right)
+        ctx.fillStyle = isLiveData ? '#00FF41' : (isTelemetryGap ? '#FFAB00' : '#FF6D00');
         ctx.fillRect(W-8, 6, 5, 5);
         ctx.fillStyle = 'rgba(255,255,255,0.5)';
         ctx.font = '5px "Press Start 2P", monospace';
         ctx.textAlign = 'right';
-        ctx.fillText(liveAvailable ? 'LIVE' : 'NO DATA', W-12, 10);
+        ctx.fillText(isLiveData ? 'LIVE' : (isTelemetryGap ? 'SIMULATED' : 'NO DATA'), W-12, 10);
 
-        // Show big countdown on canvas during pre-launch
-        const realH = getRealMET();
-        if (realH < 0) {
+        if (isPreLaunch) {
+            // Big countdown
             ctx.textAlign = 'center';
             ctx.fillStyle = '#FFD600';
             ctx.font = '12px "Press Start 2P", monospace';
@@ -598,6 +608,14 @@ function render(t) {
             ctx.fillStyle = 'rgba(255,255,255,0.4)';
             ctx.font = '6px "Press Start 2P", monospace';
             ctx.fillText('LAUNCH: ' + launchTimeStr, W/2, H/2 - 6);
+        } else if (isTelemetryGap) {
+            // Telemetry pending banner (top-left)
+            ctx.textAlign = 'left';
+            ctx.fillStyle = 'rgba(255,171,0,0.6)';
+            ctx.font = '5px "Press Start 2P", monospace';
+            ctx.fillText('\u26A0 TELEMETRY PENDING', 6, 10);
+            ctx.fillStyle = 'rgba(255,255,255,0.3)';
+            ctx.fillText('POSITION IS SIMULATED', 6, 20);
         }
     }
 }
@@ -650,19 +668,23 @@ function updateUI() {
         $desc.textContent = activePhase.desc;
         isCompleted = (idx) => PHASES.indexOf(activePhase) > idx;
     } else if (mode === 'live') {
-        // Live mode but no telemetry yet — show real countdown/MET
+        // Live mode but no telemetry yet — use sim model synced to real clock
         const realH = getRealMET();
         activePhase = getPhase(realH);
         $phase.textContent = activePhase.name;
-        $dist.textContent = '0 km';
-        $speed.textContent = '0 km/h';
         $met.textContent = formatMET(realH);
         $badge.textContent = activePhase.name;
+
         if (realH < 0) {
-            // Pre-launch: show countdown + scheduled launch time
-            $desc.textContent = `LAUNCH SCHEDULED: ${launchTimeStr} — ${formatCountdown(-realH)} remaining`;
+            // Pre-launch: countdown
+            $dist.textContent = '0 km';
+            $speed.textContent = '0 km/h';
+            $desc.textContent = `LAUNCH SCHEDULED: ${launchTimeStr} \u2014 ${formatCountdown(-realH)} remaining`;
         } else {
-            $desc.textContent = activePhase.desc;
+            // Post-launch but no telemetry yet — show simulated values
+            $dist.textContent = numFmt.format(Math.round(getDistance(realH))) + ' km (est.)';
+            $speed.textContent = numFmt.format(Math.round(getSpeed(realH))) + ' km/h (est.)';
+            $desc.textContent = `\u26A0 TELEMETRY PENDING \u2014 simulated position shown. Live data begins after ICPS separation (~T+3h24m).`;
         }
         isCompleted = (idx) => PHASES[idx].endH <= realH && PHASES[idx] !== activePhase;
     } else {
