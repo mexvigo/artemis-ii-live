@@ -132,7 +132,7 @@ let lastTime = null;
 let animTime = 0;
 
 // ── Live data state ───────────────────────────────────────
-let mode = 'sim';          // 'sim' or 'live'
+let mode = 'live';          // 'sim' or 'live'
 let liveData = null;       // latest Horizons response
 let livePollTimer = null;
 let liveAvailable = false; // true once we get a valid response
@@ -833,8 +833,7 @@ document.querySelectorAll('.mode-btn').forEach(btn => {
 
 // ── Init ──────────────────────────────────────────────────
 buildTimeline();
-updateSourceIndicator();
-updateUI();
+setMode('live'); // default to live mode
 requestAnimationFrame(loop);
 
 })();
