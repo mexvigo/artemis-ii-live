@@ -1,0 +1,9 @@
+{
+  "name": "artemis-ii-live",
+  "version": "1.0.0",
+  "private": true,
+  "description": "8-bit style Artemis II mission tracker - Earth to Moon and back",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Artemis II Live</title>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <div id="app">
+        <header>
+            <h1>ARTEMIS II LIVE</h1>
+            <div id="phase-badge">PRE-LAUNCH</div>
+        </header>
+
+        <div id="canvas-wrap">
+            <canvas id="space" width="480" height="270"></canvas>
+            <div class="scanlines"></div>
+        </div>
+
+        <div id="stats">
+            <div class="stat">
+                <span class="label">MISSION PHASE</span>
+                <span class="value" id="s-phase">Pre-Launch</span>
+            </div>
+            <div class="stat">
+                <span class="label">DISTANCE FROM EARTH</span>
+                <span class="value" id="s-dist">0 km</span>
+            </div>
+            <div class="stat">
+                <span class="label">SPEED</span>
+                <span class="value" id="s-speed">0 km/h</span>
+            </div>
+            <div class="stat">
+                <span class="label">MISSION ELAPSED TIME</span>
+                <span class="value" id="s-met">T-00:10:00</span>
+            </div>
+        </div>
+
+        <div id="timeline">
+            <div id="timeline-bar"></div>
+            <div id="timeline-labels"></div>
+            <div id="timeline-list"></div>
+        </div>
+
+        <div id="mode-bar">
+            <div id="mode-toggle">
+                <button class="mode-btn active" data-mode="sim">SIMULATION</button>
+                <button class="mode-btn" data-mode="live">LIVE</button>
+            </div>
+            <div id="data-source">
+                <span id="src-dot" class="dot dot-sim"></span>
+                <span id="src-label">SIMULATED DATA</span>
+            </div>
+        </div>
+
+        <div id="controls">
+            <button id="btn-play" class="ctrl">&#9654; PLAY</button>
+            <button id="btn-pause" class="ctrl">&#9646;&#9646; PAUSE</button>
+            <button id="btn-reset" class="ctrl">&#8634; RESET</button>
+            <div id="speed-group">
+                <span class="speed-label">SPEED:</span>
+                <button class="spd" data-speed="1">1x</button>
+                <button class="spd" data-speed="100">100x</button>
+                <button class="spd active" data-speed="1000">1Kx</button>
+                <button class="spd" data-speed="5000">5Kx</button>
+            </div>
+        </div>
+
+        <div id="phase-desc"></div>
+
+        <footer>
+            <div class="crew">CREW: Reid Wiseman &bull; Victor Glover &bull; Christina Koch &bull; Jeremy Hansen</div>
+            <div class="note" id="footer-note">Simulated trajectory based on NASA Artemis II flight plan</div>
+            <div class="note">Live data powered by JPL Horizons API &bull; ssd.jpl.nasa.gov</div>
+        </footer>
+    </div>
+
+    <script src="js/app.js"></script>
+</body>
+</html>
