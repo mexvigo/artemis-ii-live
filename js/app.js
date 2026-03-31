@@ -135,7 +135,56 @@ let liveData = null;       // latest Horizons response
 let livePollTimer = null;
 let liveAvailable = false; // true once we get a valid response
 const POLL_INTERVAL = 15000; // 15 seconds
-const HORIZONS_ENDPOINT = '/api/horizons?id=-1024';
+
+// Detect if running on GitHub Pages (no server proxy available)
+const IS_STATIC = location.hostname.includes('github.io') || location.protocol === 'file:';
+
+// Build the JPL Horizons URL for direct client-side fetch
+function buildHorizonsURL() {
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2,'0');
+    const isoNow = `${now.getUTCFullYear()}-${pad(now.getUTCMonth()+1)}-${pad(now.getUTCDate())} ${pad(now.getUTCHours())}:${pad(now.getUTCMinutes())}`;
+    const later = new Date(now.getTime() + 60000);
+    const isoLater = `${later.getUTCFullYear()}-${pad(later.getUTCMonth()+1)}-${pad(later.getUTCDate())} ${pad(later.getUTCHours())}:${pad(later.getUTCMinutes())}`;
+    const params = new URLSearchParams({
+        format:      'json',
+        COMMAND:     "'-1024'",
+        OBJ_DATA:    'NO',
+        MAKE_EPHEM:  'YES',
+        EPHEM_TYPE:  'VECTORS',
+        CENTER:      "'500@399'",
+        START_TIME:  `'${isoNow}'`,
+        STOP_TIME:   `'${isoLater}'`,
+        STEP_SIZE:   "'1'",
+        VEC_TABLE:   '2',
+        OUT_UNITS:   'KM-S',
+        CSV_FORMAT:  'YES',
+        VEC_LABELS:  'NO'
+    });
+    return `https://ssd.jpl.nasa.gov/api/horizons.api?${params}`;
+}
+
+// Parse Horizons JSON result into our live data format
+function parseHorizonsResult(json) {
+    const result = json.result || '';
+    const soeMatch = result.match(/\$\$SOE([\s\S]*?)\$\$EOE/);
+    if (!soeMatch) return null;
+    const lines = soeMatch[1].trim().split('\n').filter(l => l.trim());
+    if (lines.length === 0) return null;
+    const cols = lines[0].split(',').map(s => s.trim());
+    const x = parseFloat(cols[2]), y = parseFloat(cols[3]), z = parseFloat(cols[4]);
+    const vx = parseFloat(cols[5]), vy = parseFloat(cols[6]), vz = parseFloat(cols[7]);
+    const distKm = Math.sqrt(x*x + y*y + z*z);
+    const speedKmS = Math.sqrt(vx*vx + vy*vy + vz*vz);
+    return {
+        live: true,
+        timestamp: cols[1],
+        distanceKm: Math.round(distKm),
+        speedKmH: Math.round(speedKmS * 3600),
+        position: { x, y, z },
+        velocity: { vx, vy, vz }
+    };
+}
 
 // ── DOM refs ──────────────────────────────────────────────
 const $phase   = document.getElementById('s-phase');
@@ -367,8 +416,18 @@ function drawDistanceLine(hOrObj) {
 // ── Horizons API Client ───────────────────────────────────
 async function pollHorizons() {
     try {
-        const res = await fetch(HORIZONS_ENDPOINT);
-        const data = await res.json();
+        let data;
+        if (IS_STATIC) {
+            // Direct call to JPL Horizons (works because they allow JSON cross-origin)
+            const res = await fetch(buildHorizonsURL());
+            const json = await res.json();
+            data = parseHorizonsResult(json);
+            if (!data) data = { live: false };
+        } else {
+            // Use our local server proxy
+            const res = await fetch('/api/horizons?id=-1024');
+            data = await res.json();
+        }
         if (data.live) {
             liveData = data;
             liveAvailable = true;
