@@ -538,19 +538,23 @@ function updateSourceIndicator() {
     }
 }
 
-// Infer mission phase from live distance + speed
+// Infer mission phase from live distance + speed + mission elapsed time
 function inferPhaseFromLive(distKm, spdKmH) {
-    if (distKm < 200 && spdKmH < 100) return PHASES[0];  // prelaunch
-    if (distKm < 200 && spdKmH > 100) return PHASES[1];  // launch
-    if (distKm < 300 && spdKmH > 25000) return PHASES[2]; // orbit
-    if (distKm < 5000 && spdKmH > 30000) return PHASES[3]; // TLI
-    if (distKm < 350000 && distKm > 5000) {
-        // outbound or return — check speed trend
-        return spdKmH < 15000 ? PHASES[4] : PHASES[6]; // outbound decelerating vs return accelerating
-    }
-    if (distKm >= 350000) return PHASES[5]; // flyby
-    if (distKm < 5000 && spdKmH > 30000) return PHASES[7]; // re-entry
-    return PHASES[4]; // default outbound
+    const now = Date.now();
+    const elapsedH = (now - LAUNCH_UTC) / 3600000; // mission hours
+
+    // Use elapsed time as primary discriminator — it's more reliable than
+    // trying to guess phase from distance/speed alone, especially during
+    // the complex early-mission orbit-raising manoeuvres.
+    if (elapsedH < 0)      return PHASES[0]; // prelaunch
+    if (elapsedH < 0.33)   return PHASES[1]; // launch & ascent
+    if (elapsedH < 5)      return PHASES[2]; // earth orbit
+    if (elapsedH < 47.5)   return PHASES[3]; // high earth orbit
+    if (elapsedH < 48)     return PHASES[4]; // TLI burn
+    if (elapsedH < 121.4)  return PHASES[5]; // outbound coast
+    if (elapsedH < 123.4)  return PHASES[6]; // lunar flyby
+    if (elapsedH < 217)    return PHASES[7]; // return coast
+    return PHASES[8]; // re-entry & splashdown
 }
 
 // Get capsule canvas position from live distance
