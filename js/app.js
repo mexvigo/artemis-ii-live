@@ -231,6 +231,7 @@ const $phase   = document.getElementById('s-phase');
 const $dist    = document.getElementById('s-dist');
 const $speed   = document.getElementById('s-speed');
 const $met     = document.getElementById('s-met');
+const $next    = document.getElementById('s-next');
 const $badge   = document.getElementById('phase-badge');
 const $desc    = document.getElementById('phase-desc');
 const $bar     = document.getElementById('timeline-bar');
@@ -711,6 +712,22 @@ function formatCountdown(hours) {
     return `${pad(h)}h ${pad(m)}m ${pad(s)}s`;
 }
 
+function updateNextPhase(activePhase, currentH) {
+    const idx = PHASES.indexOf(activePhase);
+    if (idx < 0 || idx >= PHASES.length - 1) {
+        // Last phase or unknown — no next phase
+        $next.textContent = activePhase === PHASES[PHASES.length - 1] ? 'MISSION COMPLETE' : '\u2014';
+        return;
+    }
+    const nextPhase = PHASES[idx + 1];
+    const hoursLeft = nextPhase.startH - currentH;
+    if (hoursLeft <= 0) {
+        $next.textContent = nextPhase.name + ' \u2014 NOW';
+    } else {
+        $next.textContent = nextPhase.name + ' in ' + formatCountdown(hoursLeft);
+    }
+}
+
 function updateUI() {
     const isLive = mode === 'live' && liveAvailable && liveData;
 
@@ -726,6 +743,7 @@ function updateUI() {
         $met.textContent = formatMET(getRealMET());
         $badge.textContent = activePhase.name;
         $desc.textContent = activePhase.desc;
+        updateNextPhase(activePhase, getRealMET());
         isCompleted = (idx) => PHASES.indexOf(activePhase) > idx;
     } else if (mode === 'live') {
         // Live mode but no telemetry yet — use sim model synced to real clock
@@ -745,8 +763,7 @@ function updateUI() {
             $dist.textContent = numFmt.format(Math.round(getDistance(realH))) + ' km (est.)';
             $speed.textContent = numFmt.format(Math.round(getSpeed(realH))) + ' km/h (est.)';
             $desc.textContent = `\u26A0 TELEMETRY PENDING \u2014 simulated position shown. Live data begins after ICPS separation (~T+3h24m).`;
-        }
-        isCompleted = (idx) => PHASES[idx].endH <= realH && PHASES[idx] !== activePhase;
+        }        updateNextPhase(activePhase, realH);        isCompleted = (idx) => PHASES[idx].endH <= realH && PHASES[idx] !== activePhase;
     } else {
         activePhase = getPhase(missionH);
         $phase.textContent = activePhase.name;
@@ -755,6 +772,7 @@ function updateUI() {
         $met.textContent = formatMET(missionH);
         $badge.textContent = activePhase.name;
         $desc.textContent = activePhase.desc;
+        updateNextPhase(activePhase, missionH);
         isCompleted = (idx) => PHASES[idx].endH <= missionH && PHASES[idx] !== activePhase;
     }
 
