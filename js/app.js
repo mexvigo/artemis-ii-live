@@ -847,7 +847,10 @@ function loop(ts) {
     // Update trail
     trailTick++;
     if (trailTick%3===0) {
-        const pos=capsulePos(missionH);
+        const isLive = mode === 'live' && liveAvailable && liveData;
+        const pos = isLive
+            ? capsulePosFromLive(liveData.distanceKm, livePhase)
+            : capsulePos(missionH);
         trail.push({x:pos.x, y:pos.y});
         if (trail.length>TRAIL_LEN) trail.shift();
     }
