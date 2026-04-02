@@ -134,6 +134,7 @@ let animTime = 0;
 // ── Live data state ───────────────────────────────────────
 let mode = 'live';          // 'sim' or 'live'
 let liveData = null;       // latest Horizons response
+let livePhase = null;      // current phase inferred from live telemetry
 let livePollTimer = null;
 let liveAvailable = false; // true once we get a valid response
 const POLL_INTERVAL = 15000; // 15 seconds
@@ -302,6 +303,16 @@ function capsulePos(h) {
     if (p.id==='orbit') {
         const a=t*Math.PI*6, r=EARTH.r+6;
         return { x:EARTH.x+Math.cos(a)*r, y:EARTH.y+Math.sin(a)*r };
+    }
+    if (p.id==='highorbit') {
+        // Wider elliptical orbit — slowly drifts outward as apogee raises
+        const baseR = EARTH.r + 10;
+        const maxR  = EARTH.r + 22;
+        const r = lerp(baseR, maxR, t);
+        // Slow orbit: ~1.5 full rotations across the whole phase
+        const a = t * Math.PI * 3;
+        // Slight elliptical squash
+        return { x: EARTH.x + Math.cos(a) * r, y: EARTH.y + Math.sin(a) * (r * 0.7) };
     }
     return trajPoint(lerp(p.trajS, p.trajE, t));
 }
@@ -538,29 +549,72 @@ function updateSourceIndicator() {
     }
 }
 
-// Infer mission phase from live distance + speed + mission elapsed time
+// Infer mission phase from elapsed time + telemetry cross-check
 function inferPhaseFromLive(distKm, spdKmH) {
     const now = Date.now();
-    const elapsedH = (now - LAUNCH_UTC) / 3600000; // mission hours
+    const elapsedH = (now - LAUNCH_UTC) / 3600000;
 
-    // Use elapsed time as primary discriminator — it's more reliable than
-    // trying to guess phase from distance/speed alone, especially during
-    // the complex early-mission orbit-raising manoeuvres.
-    if (elapsedH < 0)      return PHASES[0]; // prelaunch
-    if (elapsedH < 0.33)   return PHASES[1]; // launch & ascent
-    if (elapsedH < 5)      return PHASES[2]; // earth orbit
-    if (elapsedH < 47.5)   return PHASES[3]; // high earth orbit
-    if (elapsedH < 48)     return PHASES[4]; // TLI burn
-    if (elapsedH < 121.4)  return PHASES[5]; // outbound coast
-    if (elapsedH < 123.4)  return PHASES[6]; // lunar flyby
-    if (elapsedH < 217)    return PHASES[7]; // return coast
-    return PHASES[8]; // re-entry & splashdown
+    // Time-based phase (primary)
+    let timePhase;
+    if (elapsedH < 0)        timePhase = PHASES[0]; // prelaunch
+    else if (elapsedH < 0.33) timePhase = PHASES[1]; // launch & ascent
+    else if (elapsedH < 5)    timePhase = PHASES[2]; // earth orbit
+    else if (elapsedH < 47.5) timePhase = PHASES[3]; // high earth orbit
+    else if (elapsedH < 48)   timePhase = PHASES[4]; // TLI burn
+    else if (elapsedH < 121.4) timePhase = PHASES[5]; // outbound coast
+    else if (elapsedH < 123.4) timePhase = PHASES[6]; // lunar flyby
+    else if (elapsedH < 217)  timePhase = PHASES[7]; // return coast
+    else                      timePhase = PHASES[8]; // re-entry & splashdown
+
+    // If no valid telemetry, trust the timeline
+    if (!distKm || distKm <= 0) return timePhase;
+
+    // ── Hybrid cross-checks: override when telemetry clearly contradicts ──
+    // TLI not yet fired: timeline says TLI or outbound, but still close to Earth
+    if ((timePhase.id === 'tli' || timePhase.id === 'outbound') && distKm < 5000) {
+        return PHASES[3]; // still in high earth orbit — TLI likely delayed
+    }
+    // Early TLI: timeline says high orbit, but distance racing away from Earth
+    if (timePhase.id === 'highorbit' && distKm > 15000) {
+        return PHASES[5]; // already outbound — TLI happened early
+    }
+    // Should be outbound but near Moon — already in flyby
+    if (timePhase.id === 'outbound' && distKm > 350000) {
+        return PHASES[6]; // lunar flyby
+    }
+    // Should be return but still near Moon
+    if (timePhase.id === 'return' && distKm > 350000) {
+        return PHASES[6]; // still in flyby
+    }
+    // Should be in orbit/highorbit but already far — likely skipped ahead
+    if ((timePhase.id === 'orbit' || timePhase.id === 'highorbit') && distKm > 50000 && spdKmH > 30000) {
+        return PHASES[5]; // outbound
+    }
+
+    return timePhase;
 }
 
-// Get capsule canvas position from live distance
-function capsulePosFromDist(distKm) {
+// Get capsule canvas position from live telemetry
+function capsulePosFromLive(distKm, phase) {
+    // Early phases: show orbiting Earth at appropriate radius
+    if (phase && (phase.id === 'prelaunch' || phase.id === 'launch' || phase.id === 'orbit' || phase.id === 'highorbit')) {
+        // Map actual distance to a visible orbit radius near Earth
+        // Real high orbit goes up to ~70,000 km — scale to pixel radius
+        const minR = EARTH.r + 6;
+        const maxR = EARTH.r + 22;
+        const orbitPct = Math.min(distKm / 75000, 1);
+        const r = lerp(minR, maxR, orbitPct);
+        // Animate rotation using current time
+        const now = Date.now();
+        const a = (now / 8000) % (Math.PI * 2);  // one rotation per ~50s
+        return { x: EARTH.x + Math.cos(a) * r, y: EARTH.y + Math.sin(a) * (r * 0.7) };
+    }
+    // Outbound / return: map distance to trajectory curve
     const pct = Math.min(distKm / 384400, 1);
-    return trajPoint(pct * 0.44); // map to outbound arc as approximation
+    if (phase && (phase.id === 'return' || phase.id === 'reentry')) {
+        return trajPoint(0.56 + (1 - pct) * 0.44); // return leg
+    }
+    return trajPoint(pct * 0.44); // outbound leg
 }
 
 // ── Main render ───────────────────────────────────────────
@@ -579,7 +633,7 @@ function render(t) {
 
     let pos;
     if (isLive) {
-        pos = capsulePosFromDist(liveData.distanceKm);
+        pos = capsulePosFromLive(liveData.distanceKm, livePhase);
     } else {
         pos = capsulePos(missionH);
     }
@@ -668,6 +722,7 @@ function updateUI() {
 
     if (isLive) {
         activePhase = inferPhaseFromLive(liveData.distanceKm, liveData.speedKmH);
+        livePhase = activePhase;
         $phase.textContent = activePhase.name;
         $dist.textContent = numFmt.format(liveData.distanceKm) + ' km';
         $speed.textContent = numFmt.format(liveData.speedKmH) + ' km/h';
