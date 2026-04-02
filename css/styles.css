@@ -79,7 +79,7 @@ h1 {
 /* ═══ Stats Panel ═══ */
 #stats {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
     gap: 2px;
     margin-top: 12px;
     background: #1a237e;

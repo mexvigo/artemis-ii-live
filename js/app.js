@@ -137,6 +137,7 @@ let liveData = null;       // latest Horizons response
 let livePhase = null;      // current phase inferred from live telemetry
 let livePollTimer = null;
 let liveAvailable = false; // true once we get a valid response
+let moonDistKm = null;     // live distance from Orion to Moon
 const POLL_INTERVAL = 15000; // 15 seconds
 
 // Detect if running on GitHub Pages (no server proxy available)
@@ -232,6 +233,9 @@ const $dist    = document.getElementById('s-dist');
 const $speed   = document.getElementById('s-speed');
 const $met     = document.getElementById('s-met');
 const $next    = document.getElementById('s-next');
+const $moon    = document.getElementById('s-moon');
+const $progress= document.getElementById('s-progress');
+const $crew    = document.getElementById('s-crew');
 const $badge   = document.getElementById('phase-badge');
 const $desc    = document.getElementById('phase-desc');
 const $bar     = document.getElementById('timeline-bar');
@@ -491,6 +495,100 @@ async function pollHorizons() {
         liveAvailable = false;
     }
     updateSourceIndicator();
+    // Also fetch Moon distance in parallel
+    pollMoonDistance();
+}
+
+// Fetch Moon position (Earth-centered) and compute distance from Orion
+async function pollMoonDistance() {
+    if (!liveData || !liveData.position) { moonDistKm = null; return; }
+    try {
+        const now = new Date();
+        const pad = (n) => String(n).padStart(2,'0');
+        const isoNow = `${now.getUTCFullYear()}-${pad(now.getUTCMonth()+1)}-${pad(now.getUTCDate())} ${pad(now.getUTCHours())}:${pad(now.getUTCMinutes())}`;
+        const later = new Date(now.getTime() + 60000);
+        const isoLater = `${later.getUTCFullYear()}-${pad(later.getUTCMonth()+1)}-${pad(later.getUTCDate())} ${pad(later.getUTCHours())}:${pad(later.getUTCMinutes())}`;
+        const params = new URLSearchParams({
+            format:     'json',
+            COMMAND:    "'301'",
+            OBJ_DATA:   'NO',
+            MAKE_EPHEM: 'YES',
+            EPHEM_TYPE: 'VECTORS',
+            CENTER:     "'500@399'",
+            START_TIME: `'${isoNow}'`,
+            STOP_TIME:  `'${isoLater}'`,
+            STEP_SIZE:  "'1'",
+            VEC_TABLE:  '2',
+            OUT_UNITS:  'KM-S',
+            CSV_FORMAT: 'YES',
+            VEC_LABELS: 'NO'
+        });
+        const url = IS_STATIC
+            ? `${WORKER_BASE}?${params}`
+            : `https://ssd.jpl.nasa.gov/api/horizons.api?${params}`;
+        const res = await fetch(url);
+        const json = await res.json();
+        const result = json.result || '';
+        const soe = result.match(/\$\$SOE([\s\S]*?)\$\$EOE/);
+        if (!soe) { moonDistKm = null; return; }
+        const cols = soe[1].trim().split('\n')[0].split(',').map(s => s.trim());
+        const mx = parseFloat(cols[2]), my = parseFloat(cols[3]), mz = parseFloat(cols[4]);
+        // Vector from Orion to Moon
+        const dx = liveData.position.x - mx;
+        const dy = liveData.position.y - my;
+        const dz = liveData.position.z - mz;
+        moonDistKm = Math.round(Math.sqrt(dx*dx + dy*dy + dz*dz));
+    } catch (e) {
+        moonDistKm = null;
+    }
+}
+
+// ── Crew sleep/wake schedule ──────────────────────────────
+// Artemis II planned crew schedule (approximate, based on NASA flight plan)
+// Sleep periods repeat roughly every 24h. All times in mission hours.
+const CREW_SCHEDULE = [
+    { startH: -8,    endH: 0,     status: 'AWAKE',  activity: 'Pre-launch prep & countdown' },
+    { startH: 0,     endH: 14,    status: 'AWAKE',  activity: 'Launch, orbit ops & systems checkout' },
+    { startH: 14,    endH: 22,    status: 'SLEEP',  activity: 'Sleep period 1' },
+    { startH: 22,    endH: 38,    status: 'AWAKE',  activity: 'TLI prep, burn & post-burn checkout' },
+    { startH: 38,    endH: 46,    status: 'SLEEP',  activity: 'Sleep period 2' },
+    { startH: 46,    endH: 62,    status: 'AWAKE',  activity: 'Outbound coast ops & trajectory correction' },
+    { startH: 62,    endH: 70,    status: 'SLEEP',  activity: 'Sleep period 3' },
+    { startH: 70,    endH: 86,    status: 'AWAKE',  activity: 'Mid-course correction & Earth/Moon photography' },
+    { startH: 86,    endH: 94,    status: 'SLEEP',  activity: 'Sleep period 4' },
+    { startH: 94,    endH: 110,   status: 'AWAKE',  activity: 'Outbound coast & navigation updates' },
+    { startH: 110,   endH: 118,   status: 'SLEEP',  activity: 'Sleep period 5' },
+    { startH: 118,   endH: 134,   status: 'AWAKE',  activity: 'Lunar flyby & far-side observation' },
+    { startH: 134,   endH: 142,   status: 'SLEEP',  activity: 'Sleep period 6' },
+    { startH: 142,   endH: 158,   status: 'AWAKE',  activity: 'Return coast & piloting demo prep' },
+    { startH: 158,   endH: 166,   status: 'SLEEP',  activity: 'Sleep period 7' },
+    { startH: 166,   endH: 182,   status: 'AWAKE',  activity: 'Piloting demonstration & systems test' },
+    { startH: 182,   endH: 190,   status: 'SLEEP',  activity: 'Sleep period 8' },
+    { startH: 190,   endH: 206,   status: 'AWAKE',  activity: 'Final trajectory correction & stow' },
+    { startH: 206,   endH: 213,   status: 'SLEEP',  activity: 'Sleep period 9' },
+    { startH: 213,   endH: 220,   status: 'AWAKE',  activity: 'Re-entry prep, module separation & splashdown' }
+];
+
+function getCrewStatus(h) {
+    for (let i = CREW_SCHEDULE.length - 1; i >= 0; i--) {
+        if (h >= CREW_SCHEDULE[i].startH && h < CREW_SCHEDULE[i].endH) return CREW_SCHEDULE[i];
+    }
+    return { status: '\u2014', activity: '' };
+}
+
+// ── Journey progress ──────────────────────────────────────
+function getJourneyProgress(distFromEarth, phase) {
+    const MOON_DIST = 384400;
+    if (!phase) return 0;
+    if (phase.id === 'prelaunch') return 0;
+    if (phase.id === 'reentry' && distFromEarth < 100) return 100;
+    if (phase.id === 'return' || phase.id === 'reentry') {
+        const retPct = 1 - Math.min(distFromEarth / MOON_DIST, 1);
+        return Math.round(50 + retPct * 50);
+    }
+    if (phase.id === 'flyby') return 50;
+    const outPct = Math.min(distFromEarth / MOON_DIST, 1);
+    return Math.round(outPct * 50);
 }
 
 function startLivePolling() {
@@ -728,6 +826,28 @@ function updateNextPhase(activePhase, currentH) {
     }
 }
 
+function updateExtraStats(distKm, activePhase, metH) {
+    // Moon distance
+    if (moonDistKm !== null) {
+        $moon.textContent = numFmt.format(moonDistKm) + ' km';
+    } else {
+        // Estimate: Moon is ~384,400 km from Earth
+        const estMoonDist = Math.max(0, Math.round(384400 - distKm));
+        $moon.textContent = numFmt.format(estMoonDist) + ' km (est.)';
+    }
+    // Journey progress
+    $progress.textContent = getJourneyProgress(distKm, activePhase) + '%';
+    // Crew status
+    const crew = getCrewStatus(metH);
+    if (crew.status === 'AWAKE') {
+        $crew.textContent = '\u2600 AWAKE \u2014 ' + crew.activity;
+    } else if (crew.status === 'SLEEP') {
+        $crew.textContent = '\uD83C\uDF19 SLEEP \u2014 ' + crew.activity;
+    } else {
+        $crew.textContent = crew.status;
+    }
+}
+
 function updateUI() {
     const isLive = mode === 'live' && liveAvailable && liveData;
 
@@ -744,6 +864,7 @@ function updateUI() {
         $badge.textContent = activePhase.name;
         $desc.textContent = activePhase.desc;
         updateNextPhase(activePhase, getRealMET());
+        updateExtraStats(liveData.distanceKm, activePhase, getRealMET());
         isCompleted = (idx) => PHASES.indexOf(activePhase) > idx;
     } else if (mode === 'live') {
         // Live mode but no telemetry yet — use sim model synced to real clock
@@ -763,7 +884,7 @@ function updateUI() {
             $dist.textContent = numFmt.format(Math.round(getDistance(realH))) + ' km (est.)';
             $speed.textContent = numFmt.format(Math.round(getSpeed(realH))) + ' km/h (est.)';
             $desc.textContent = `\u26A0 TELEMETRY PENDING \u2014 simulated position shown. Live data begins after ICPS separation (~T+3h24m).`;
-        }        updateNextPhase(activePhase, realH);        isCompleted = (idx) => PHASES[idx].endH <= realH && PHASES[idx] !== activePhase;
+        }        updateNextPhase(activePhase, realH);        updateExtraStats(Math.round(getDistance(realH)), activePhase, realH);        isCompleted = (idx) => PHASES[idx].endH <= realH && PHASES[idx] !== activePhase;
     } else {
         activePhase = getPhase(missionH);
         $phase.textContent = activePhase.name;
@@ -773,6 +894,7 @@ function updateUI() {
         $badge.textContent = activePhase.name;
         $desc.textContent = activePhase.desc;
         updateNextPhase(activePhase, missionH);
+        updateExtraStats(Math.round(getDistance(missionH)), activePhase, missionH);
         isCompleted = (idx) => PHASES[idx].endH <= missionH && PHASES[idx] !== activePhase;
     }
 
