@@ -571,11 +571,12 @@ function inferPhaseFromLive(distKm, spdKmH) {
 
     // ── Hybrid cross-checks: override when telemetry clearly contradicts ──
     // TLI not yet fired: timeline says TLI or outbound, but still close to Earth
-    if ((timePhase.id === 'tli' || timePhase.id === 'outbound') && distKm < 5000) {
+    if ((timePhase.id === 'tli' || timePhase.id === 'outbound') && distKm < 80000 && spdKmH < 20000) {
         return PHASES[3]; // still in high earth orbit — TLI likely delayed
     }
-    // Early TLI: timeline says high orbit, but distance racing away from Earth
-    if (timePhase.id === 'highorbit' && distKm > 15000) {
+    // Early TLI: timeline says high orbit, but distance AND speed show departure
+    // High orbit apogee reaches ~70,000+ km at low speed; TLI sends Orion at 35,000+ km/h
+    if (timePhase.id === 'highorbit' && distKm > 100000 && spdKmH > 25000) {
         return PHASES[5]; // already outbound — TLI happened early
     }
     // Should be outbound but near Moon — already in flyby
@@ -585,10 +586,6 @@ function inferPhaseFromLive(distKm, spdKmH) {
     // Should be return but still near Moon
     if (timePhase.id === 'return' && distKm > 350000) {
         return PHASES[6]; // still in flyby
-    }
-    // Should be in orbit/highorbit but already far — likely skipped ahead
-    if ((timePhase.id === 'orbit' || timePhase.id === 'highorbit') && distKm > 50000 && spdKmH > 30000) {
-        return PHASES[5]; // outbound
     }
 
     return timePhase;
