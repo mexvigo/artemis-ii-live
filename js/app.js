@@ -140,12 +140,14 @@ const POLL_INTERVAL = 15000; // 15 seconds
 
 // Detect if running on GitHub Pages (no server proxy available)
 const IS_STATIC = location.hostname.includes('github.io') || location.protocol === 'file:';
+const WORKER_BASE = 'https://artemis-horizons-proxy.acrvogt.workers.dev/horizons';
 
 // ── Fetch launch time from JPL OBJ_DATA ──────────────────
 async function fetchLaunchTime() {
     if (launchFetched) return;
     try {
-        const url = 'https://ssd.jpl.nasa.gov/api/horizons.api?format=json&COMMAND=\'-1024\'&MAKE_EPHEM=NO&OBJ_DATA=YES';
+        const baseUrl = IS_STATIC ? WORKER_BASE : 'https://ssd.jpl.nasa.gov/api/horizons.api';
+        const url = `${baseUrl}?format=json&COMMAND='-1024'&MAKE_EPHEM=NO&OBJ_DATA=YES`;
         const res = await fetch(url);
         const json = await res.json();
         const result = json.result || '';
@@ -196,7 +198,9 @@ function buildHorizonsURL() {
         CSV_FORMAT:  'YES',
         VEC_LABELS:  'NO'
     });
-    return `https://ssd.jpl.nasa.gov/api/horizons.api?${params}`;
+    return IS_STATIC
+        ? `${WORKER_BASE}?${params}`
+        : `https://ssd.jpl.nasa.gov/api/horizons.api?${params}`;
 }
 
 // Parse Horizons JSON result into our live data format
@@ -453,7 +457,7 @@ async function pollHorizons() {
     try {
         let data;
         if (IS_STATIC) {
-            // Direct call to JPL Horizons (works because they allow JSON cross-origin)
+            // Use Cloudflare Worker CORS proxy
             const res = await fetch(buildHorizonsURL());
             const json = await res.json();
             data = parseHorizonsResult(json);
