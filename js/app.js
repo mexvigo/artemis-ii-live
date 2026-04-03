@@ -63,23 +63,23 @@ const PHASES = [
     },
     {
         id:'highorbit', name:'HIGH EARTH ORBIT',
-        desc:'Extended Earth orbit — cubesat deployments, Orion separation burn, systems checkout before TLI burn on Day 2',
-        startH:5, endH:47.5,
-        distS:2223, distE:2223, spdS:28000, spdE:28000,
+        desc:'Highly elliptical orbit — apogee at ~61,000 km, systems checkout & Orion separation from ICPS upper stage',
+        startH:5, endH:25.25,
+        distS:2223, distE:8261, spdS:28000, spdE:33565,
         trajS:0, trajE:0, color:'#3F51B5', pct:8
     },
     {
         id:'tli', name:'TLI BURN',
-        desc:'Trans-Lunar Injection — ICPS upper stage fires for ~8 minutes at T+47h32m, sending Orion to the Moon',
-        startH:47.5, endH:48,
-        distS:2223, distE:5000, spdS:28000, spdE:39400,
+        desc:'Trans-Lunar Injection — ICPS upper stage fires at perigee (~T+25.5h on Apr 2), accelerating Orion to ~38,350 km/h',
+        startH:25.25, endH:25.75,
+        distS:8261, distE:10186, spdS:33565, spdE:31492,
         trajS:0, trajE:0.02, color:'#FF9800', pct:4
     },
     {
         id:'outbound', name:'OUTBOUND COAST',
-        desc:'Coasting to the Moon — trajectory correction burns on days 3, 4 & 5. Enters lunar sphere of influence at T+103h',
-        startH:48, endH:121.4,
-        distS:5000, distE:370000, spdS:39400, spdE:4000,
+        desc:'Coasting to the Moon — trajectory correction burns expected. Enters lunar sphere of influence before flyby',
+        startH:25.75, endH:121.4,
+        distS:10186, distE:370000, spdS:31492, spdE:4000,
         trajS:0.02, trajE:0.44, color:'#9C27B0', pct:28,
         ease:'out'
     },
@@ -550,7 +550,7 @@ const CREW_SCHEDULE = [
     { startH: -8,    endH: 0,     status: 'AWAKE',  activity: 'Pre-launch prep & countdown' },
     { startH: 0,     endH: 14,    status: 'AWAKE',  activity: 'Launch, orbit ops & systems checkout' },
     { startH: 14,    endH: 22,    status: 'SLEEP',  activity: 'Sleep period 1' },
-    { startH: 22,    endH: 38,    status: 'AWAKE',  activity: 'TLI prep, burn & post-burn checkout' },
+    { startH: 22,    endH: 38,    status: 'AWAKE',  activity: 'TLI burn, post-TLI checkout & outbound coast' },
     { startH: 38,    endH: 46,    status: 'SLEEP',  activity: 'Sleep period 2' },
     { startH: 46,    endH: 62,    status: 'AWAKE',  activity: 'Outbound coast ops & trajectory correction' },
     { startH: 62,    endH: 70,    status: 'SLEEP',  activity: 'Sleep period 3' },
@@ -653,13 +653,13 @@ function inferPhaseFromLive(distKm, spdKmH) {
     const now = Date.now();
     const elapsedH = (now - LAUNCH_UTC) / 3600000;
 
-    // Time-based phase (primary)
+    // Time-based phase (primary) — updated with actual TLI at ~T+25.5h
     let timePhase;
     if (elapsedH < 0)        timePhase = PHASES[0]; // prelaunch
     else if (elapsedH < 0.33) timePhase = PHASES[1]; // launch & ascent
     else if (elapsedH < 5)    timePhase = PHASES[2]; // earth orbit
-    else if (elapsedH < 47.5) timePhase = PHASES[3]; // high earth orbit
-    else if (elapsedH < 48)   timePhase = PHASES[4]; // TLI burn
+    else if (elapsedH < 25.25) timePhase = PHASES[3]; // high earth orbit
+    else if (elapsedH < 25.75) timePhase = PHASES[4]; // TLI burn
     else if (elapsedH < 121.4) timePhase = PHASES[5]; // outbound coast
     else if (elapsedH < 123.4) timePhase = PHASES[6]; // lunar flyby
     else if (elapsedH < 217)  timePhase = PHASES[7]; // return coast
@@ -673,9 +673,9 @@ function inferPhaseFromLive(distKm, spdKmH) {
     if ((timePhase.id === 'tli' || timePhase.id === 'outbound') && distKm < 80000 && spdKmH < 20000) {
         return PHASES[3]; // still in high earth orbit — TLI likely delayed
     }
-    // Early TLI: timeline says high orbit, but distance AND speed show departure
-    // High orbit apogee reaches ~70,000+ km at low speed; TLI sends Orion at 35,000+ km/h
-    if (timePhase.id === 'highorbit' && distKm > 100000 && spdKmH > 25000) {
+    // Early TLI: timeline says high orbit, but distance proves departure
+    // No Earth orbit reaches 100,000 km — if distance is that high, TLI has fired
+    if (timePhase.id === 'highorbit' && distKm > 100000) {
         return PHASES[5]; // already outbound — TLI happened early
     }
     // Should be outbound but near Moon — already in flyby
