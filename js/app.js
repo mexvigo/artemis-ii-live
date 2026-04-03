@@ -136,6 +136,7 @@ let mode = 'live';          // 'sim' or 'live'
 let liveData = null;       // latest Horizons response
 let livePhase = null;      // current phase inferred from live telemetry
 let livePollTimer = null;
+let phaseCheckTimer = null;
 let liveAvailable = false; // true once we get a valid response
 let moonDistKm = null;     // live distance from Orion to Moon
 const POLL_INTERVAL = 15000; // 15 seconds
@@ -591,13 +592,182 @@ function getJourneyProgress(distFromEarth, phase) {
     return Math.round(outPct * 50);
 }
 
+// ── Phase auto-correction (runs every 12 h) ──────────────
+// Fetches the full trajectory from launch to now in 30-min steps,
+// then detects actual phase transitions from the speed/distance curve.
+const PHASE_CHECK_INTERVAL = 12 * 3600000; // 12 hours
+let lastPhaseCheck = 0;
+
+async function checkPhaseSchedule() {
+    const now = Date.now();
+    if (now - lastPhaseCheck < PHASE_CHECK_INTERVAL) return;
+    lastPhaseCheck = now;
+
+    const elapsedH = (now - LAUNCH_UTC) / 3600000;
+    if (elapsedH < 1) return; // too early — nothing to check
+
+    try {
+        const pad = (n) => String(n).padStart(2, '0');
+        const launch = new Date(LAUNCH_UTC);
+        const startISO = `${launch.getUTCFullYear()}-${pad(launch.getUTCMonth()+1)}-${pad(launch.getUTCDate())} ${pad(launch.getUTCHours())}:${pad(launch.getUTCMinutes())}`;
+        const nd = new Date(now);
+        const endISO = `${nd.getUTCFullYear()}-${pad(nd.getUTCMonth()+1)}-${pad(nd.getUTCDate())} ${pad(nd.getUTCHours())}:${pad(nd.getUTCMinutes())}`;
+
+        const params = new URLSearchParams({
+            format:     'json',
+            COMMAND:    "'-1024'",
+            OBJ_DATA:   'NO',
+            MAKE_EPHEM: 'YES',
+            EPHEM_TYPE: 'VECTORS',
+            CENTER:     "'500@399'",
+            START_TIME: `'${startISO}'`,
+            STOP_TIME:  `'${endISO}'`,
+            STEP_SIZE:  "'30m'",
+            VEC_TABLE:  '2',
+            OUT_UNITS:  'KM-S',
+            CSV_FORMAT: 'YES',
+            VEC_LABELS: 'NO'
+        });
+        const url = IS_STATIC ? `${WORKER_BASE}?${params}` : `https://ssd.jpl.nasa.gov/api/horizons.api?${params}`;
+        const res = await fetch(url);
+        const json = await res.json();
+        const result = json.result || '';
+        const soe = result.match(/\$\$SOE([\s\S]*?)\$\$EOE/);
+        if (!soe) return;
+
+        // Parse all data points
+        const rows = soe[1].trim().split('\n').filter(l => l.trim());
+        const points = rows.map(line => {
+            const c = line.split(',').map(s => s.trim());
+            const jd = parseFloat(c[0]);
+            const x = parseFloat(c[2]), y = parseFloat(c[3]), z = parseFloat(c[4]);
+            const vx = parseFloat(c[5]), vy = parseFloat(c[6]), vz = parseFloat(c[7]);
+            const dist = Math.sqrt(x*x + y*y + z*z);
+            const spd = Math.sqrt(vx*vx + vy*vy + vz*vz) * 3600; // km/h
+            // JD to mission hours
+            const msFromLaunch = (jd - 2460766.43333) * 86400000; // launch JD approx
+            const mH = msFromLaunch / 3600000;
+            return { h: mH, dist, spd, jd };
+        });
+        if (points.length < 3) return;
+
+        // Recalculate mission hours using actual LAUNCH_UTC for precision
+        const launchJD = points[0].jd;
+        points.forEach(p => {
+            p.h = (p.jd - launchJD) * 24;
+        });
+
+        // ── Detect TLI: find max speed point (TLI perigee burn) ──
+        let maxSpd = 0, tliIdx = -1;
+        for (let i = 0; i < points.length; i++) {
+            if (points[i].spd > maxSpd) { maxSpd = points[i].spd; tliIdx = i; }
+        }
+
+        // TLI is valid if max speed > 30,000 km/h and distance then increases
+        if (tliIdx > 0 && maxSpd > 30000) {
+            const tliH = points[tliIdx].h;
+            // Find where speed first exceeds 30,000 (start of burn approach)
+            let burnStartH = tliH;
+            for (let i = 0; i < tliIdx; i++) {
+                if (points[i].spd > 25000 && points[i+1].spd > points[i].spd) {
+                    burnStartH = points[i].h;
+                    break;
+                }
+            }
+            // Find where distance starts steadily increasing post-TLI
+            let coastStartH = tliH;
+            for (let i = tliIdx; i < points.length - 1; i++) {
+                if (points[i].dist > points[tliIdx].dist && points[i+1].dist > points[i].dist) {
+                    coastStartH = points[i].h;
+                    break;
+                }
+            }
+
+            // Update highorbit → TLI → outbound boundaries
+            const hiOrbit = PHASES.find(p => p.id === 'highorbit');
+            const tli = PHASES.find(p => p.id === 'tli');
+            const outbound = PHASES.find(p => p.id === 'outbound');
+            if (hiOrbit && tli && outbound) {
+                hiOrbit.endH = burnStartH;
+                hiOrbit.distE = Math.round(points[Math.max(0, tliIdx - 2)].dist);
+                hiOrbit.spdE = Math.round(points[Math.max(0, tliIdx - 2)].spd);
+                tli.startH = burnStartH;
+                tli.endH = coastStartH;
+                tli.distS = Math.round(points[Math.max(0, tliIdx - 2)].dist);
+                tli.distE = Math.round(points[Math.min(points.length-1, tliIdx + 2)].dist);
+                tli.spdS = Math.round(points[Math.max(0, tliIdx - 2)].spd);
+                tli.spdE = Math.round(points[Math.min(points.length-1, tliIdx + 2)].spd);
+                outbound.startH = coastStartH;
+                outbound.distS = Math.round(points[Math.min(points.length-1, tliIdx + 2)].dist);
+                outbound.spdS = Math.round(points[Math.min(points.length-1, tliIdx + 2)].spd);
+                console.log(`[Phase Check] TLI detected at T+${tliH.toFixed(1)}h (burn ${burnStartH.toFixed(1)}→${coastStartH.toFixed(1)}h), max speed ${Math.round(maxSpd)} km/h`);
+            }
+        }
+
+        // ── Detect lunar flyby: peak distance from Earth ──
+        let maxDist = 0, flybyIdx = -1;
+        for (let i = 0; i < points.length; i++) {
+            if (points[i].dist > maxDist) { maxDist = points[i].dist; flybyIdx = i; }
+        }
+        // Flyby valid if peak > 350,000 km and distance later decreases
+        if (flybyIdx > 0 && flybyIdx < points.length - 2 && maxDist > 350000) {
+            const preFlyby = points[flybyIdx - 1];
+            const postFlyby = points[Math.min(points.length-1, flybyIdx + 1)];
+            if (postFlyby.dist < maxDist) {
+                // Distance is decreasing after peak — flyby occurred
+                const flybyH = points[flybyIdx].h;
+                const outbound = PHASES.find(p => p.id === 'outbound');
+                const flyby = PHASES.find(p => p.id === 'flyby');
+                const ret = PHASES.find(p => p.id === 'return');
+                if (outbound && flyby && ret) {
+                    outbound.endH = flybyH - 1;
+                    outbound.distE = Math.round(preFlyby.dist);
+                    outbound.spdE = Math.round(preFlyby.spd);
+                    flyby.startH = flybyH - 1;
+                    flyby.endH = flybyH + 1;
+                    ret.startH = flybyH + 1;
+                    ret.distS = Math.round(postFlyby.dist);
+                    ret.spdS = Math.round(postFlyby.spd);
+                    console.log(`[Phase Check] Flyby detected at T+${flybyH.toFixed(1)}h, peak dist ${Math.round(maxDist)} km`);
+                }
+            }
+        }
+
+        // ── Detect re-entry: distance drops below 1000 km after being far ──
+        if (maxDist > 100000) {
+            for (let i = flybyIdx > 0 ? flybyIdx : Math.floor(points.length/2); i < points.length; i++) {
+                if (points[i].dist < 1000 && points[i].spd > 25000) {
+                    const ret = PHASES.find(p => p.id === 'return');
+                    const reentry = PHASES.find(p => p.id === 'reentry');
+                    if (ret && reentry) {
+                        ret.endH = points[i].h;
+                        reentry.startH = points[i].h;
+                        console.log(`[Phase Check] Re-entry detected at T+${points[i].h.toFixed(1)}h`);
+                    }
+                    break;
+                }
+            }
+        }
+
+        console.log(`[Phase Check] Complete — analyzed ${points.length} data points over ${points[points.length-1].h.toFixed(1)}h`);
+    } catch (e) {
+        console.warn('[Phase Check] Failed:', e.message);
+    }
+}
+
 function startLivePolling() {
     pollHorizons(); // immediate first poll
     livePollTimer = setInterval(pollHorizons, POLL_INTERVAL);
+    // Run phase schedule check immediately, then every 12 hours
+    checkPhaseSchedule();
+    if (!phaseCheckTimer) {
+        phaseCheckTimer = setInterval(checkPhaseSchedule, PHASE_CHECK_INTERVAL);
+    }
 }
 
 function stopLivePolling() {
     if (livePollTimer) { clearInterval(livePollTimer); livePollTimer = null; }
+    if (phaseCheckTimer) { clearInterval(phaseCheckTimer); phaseCheckTimer = null; }
 }
 
 function setMode(m) {
@@ -653,17 +823,11 @@ function inferPhaseFromLive(distKm, spdKmH) {
     const now = Date.now();
     const elapsedH = (now - LAUNCH_UTC) / 3600000;
 
-    // Time-based phase (primary) — updated with actual TLI at ~T+25.5h
-    let timePhase;
-    if (elapsedH < 0)        timePhase = PHASES[0]; // prelaunch
-    else if (elapsedH < 0.33) timePhase = PHASES[1]; // launch & ascent
-    else if (elapsedH < 5)    timePhase = PHASES[2]; // earth orbit
-    else if (elapsedH < 25.25) timePhase = PHASES[3]; // high earth orbit
-    else if (elapsedH < 25.75) timePhase = PHASES[4]; // TLI burn
-    else if (elapsedH < 121.4) timePhase = PHASES[5]; // outbound coast
-    else if (elapsedH < 123.4) timePhase = PHASES[6]; // lunar flyby
-    else if (elapsedH < 217)  timePhase = PHASES[7]; // return coast
-    else                      timePhase = PHASES[8]; // re-entry & splashdown
+    // Time-based phase — reads boundaries from PHASES array (auto-corrected every 12h)
+    let timePhase = PHASES[0];
+    for (let i = PHASES.length - 1; i >= 0; i--) {
+        if (elapsedH >= PHASES[i].startH) { timePhase = PHASES[i]; break; }
+    }
 
     // If no valid telemetry, trust the timeline
     if (!distKm || distKm <= 0) return timePhase;
@@ -671,20 +835,19 @@ function inferPhaseFromLive(distKm, spdKmH) {
     // ── Hybrid cross-checks: override when telemetry clearly contradicts ──
     // TLI not yet fired: timeline says TLI or outbound, but still close to Earth
     if ((timePhase.id === 'tli' || timePhase.id === 'outbound') && distKm < 80000 && spdKmH < 20000) {
-        return PHASES[3]; // still in high earth orbit — TLI likely delayed
+        return PHASES.find(p => p.id === 'highorbit') || timePhase;
     }
     // Early TLI: timeline says high orbit, but distance proves departure
-    // No Earth orbit reaches 100,000 km — if distance is that high, TLI has fired
     if (timePhase.id === 'highorbit' && distKm > 100000) {
-        return PHASES[5]; // already outbound — TLI happened early
+        return PHASES.find(p => p.id === 'outbound') || timePhase;
     }
     // Should be outbound but near Moon — already in flyby
     if (timePhase.id === 'outbound' && distKm > 350000) {
-        return PHASES[6]; // lunar flyby
+        return PHASES.find(p => p.id === 'flyby') || timePhase;
     }
     // Should be return but still near Moon
     if (timePhase.id === 'return' && distKm > 350000) {
-        return PHASES[6]; // still in flyby
+        return PHASES.find(p => p.id === 'flyby') || timePhase;
     }
 
     return timePhase;
