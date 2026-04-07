@@ -85,16 +85,16 @@ const PHASES = [
     },
     {
         id:'flyby', name:'LUNAR FLYBY',
-        desc:'Closest approach to the Moon at T+121h23m — crew views the far side. Maximum distance from Earth at T+121h26m',
-        startH:121.4, endH:123.4,
-        distS:370000, distE:370000, spdS:4000, spdE:4000,
+        desc:'Closest approach to the Moon at ~T+120.75h — crew views the far side. Peak Earth distance 413,144 km',
+        startH:119, endH:122.5,
+        distS:412000, distE:412400, spdS:1500, spdE:1510,
         trajS:0.44, trajE:0.56, color:'#FFEB3B', pct:5,
         special:'flyby'
     },
     {
         id:'return', name:'RETURN COAST',
-        desc:'Free-return trajectory — exits lunar sphere at T+139h47m. Piloting demo on day 8. Correction burns on days 9 & 10',
-        startH:123.4, endH:217,
+        desc:'Free-return trajectory — heading back toward Earth. Piloting demo & correction burns on return leg',
+        startH:122.5, endH:217,
         distS:370000, distE:2000, spdS:4000, spdE:39500,
         trajS:0.56, trajE:0.98, color:'#00BCD4', pct:35,
         ease:'in'
@@ -139,6 +139,7 @@ let livePollTimer = null;
 let phaseCheckTimer = null;
 let liveAvailable = false; // true once we get a valid response
 let moonDistKm = null;     // live distance from Orion to Moon
+let prevDistKm = null;     // previous poll distance (for trend detection)
 const POLL_INTERVAL = 15000; // 15 seconds
 
 // Detect if running on GitHub Pages (no server proxy available)
@@ -485,6 +486,7 @@ async function pollHorizons() {
             data = await res.json();
         }
         if (data.live) {
+            if (liveData) prevDistKm = liveData.distanceKm;
             liveData = data;
             liveAvailable = true;
         } else {
@@ -841,13 +843,17 @@ function inferPhaseFromLive(distKm, spdKmH) {
     if (timePhase.id === 'highorbit' && distKm > 100000) {
         return PHASES.find(p => p.id === 'outbound') || timePhase;
     }
-    // Should be outbound but near Moon — already in flyby
-    if (timePhase.id === 'outbound' && distKm > 350000) {
-        return PHASES.find(p => p.id === 'flyby') || timePhase;
-    }
-    // Should be return but still near Moon
-    if (timePhase.id === 'return' && distKm > 350000) {
-        return PHASES.find(p => p.id === 'flyby') || timePhase;
+    // Near Moon (>350k km) — use distance trend to distinguish flyby vs return
+    const distDecreasing = prevDistKm !== null && distKm < prevDistKm - 50;
+    if (distKm > 350000) {
+        if (distDecreasing) {
+            // Distance is dropping after peak — on return leg
+            return PHASES.find(p => p.id === 'return') || timePhase;
+        }
+        if (timePhase.id === 'outbound') {
+            // Still outbound and near Moon — entering flyby
+            return PHASES.find(p => p.id === 'flyby') || timePhase;
+        }
     }
 
     return timePhase;
